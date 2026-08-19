@@ -58,6 +58,21 @@ Better Stack es un SaaS de observabilidad (logs, metricas, incidentes). Para lo 
 - **Live tail** es la vista de logs en tiempo real (lo que van a usar la mayoria de las veces para debuggear mientras prueban). **Search** es para consultar logs pasados con filtros.
 - Los `mdcFields` que configuramos en el appender (`traceId`, `instanceId`, `requestId`) no son texto libre: llegan como **campos estructurados**, o sea que en Better Stack se pueden filtrar/buscar por `instanceId:"service-a:8080"` en vez de tener que grepear el mensaje.
 
+### ¿Por que no se ve el `traceId` en Live Tail? (mdcFields quedan anidados)
+
+Si miras Live Tail y no aparece `traceId`, no es que no este llegando: el appender `com.logtail:logback-logtail` (lo confirmamos leyendo su codigo fuente) **no manda los `mdcFields` al nivel raiz del JSON** — los anida adentro de un objeto `meta`. O sea que lo que en realidad llega es `meta.traceId`, `meta.instanceId`, `meta.requestId` (y `runtime.class` / `runtime.method` / `runtime.line` para lo de clase/metodo/linea). Cada Source tiene un **`live_tail_pattern`** propio (un template tipo `{app} {runtime.thread} {message}`) que define que columnas se ven inline en Live Tail, y si ese pattern no menciona `{meta.traceId}`, el campo esta ahi (podes verlo si expandis la linea) pero no se muestra en la vista compacta.
+
+Se lo actualizamos a la Source de esta cuenta via API para que se vea directo:
+
+```bash
+curl -X PATCH "https://telemetry.betterstack.com/api/v2/sources/<SOURCE_ID>" \
+  -H "Authorization: Bearer <TELEMETRY_API_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"live_tail_pattern":"{app} trace={meta.traceId} inst={meta.instanceId} req={meta.requestId} {message}"}'
+```
+
+Si creas tu propia Source y esto te vuelve a pasar, es lo primero que hay que revisar: **Integrations/Overview de la Source -> Live tail pattern**, o directamente `GET /api/v2/sources/<id>` para ver el pattern actual.
+
 ### Como conseguir el `BETTERSTACK_SOURCE_TOKEN`
 
 > **Importante:** el token de Better Stack que se usa para el **MCP** es un **Telemetry API token** (team-scoped, para administrar recursos via API/IA) y es distinto del **Source Token** que necesita el appender para *mandar* logs. Confirmado: contra el endpoint de ingesta (`https://in.logs.betterstack.com`) ese token da `401`. Pero el mismo Telemetry API token **si sirve** para listar/crear Sources via la Telemetry API (`GET/POST https://telemetry.betterstack.com/api/v2/sources`), y ahi es donde aparece el Source Token real (campo `attributes.token`) junto con el `attributes.ingesting_host` especifico de esa source.
