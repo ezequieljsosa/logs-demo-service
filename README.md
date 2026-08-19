@@ -24,6 +24,8 @@ Cada request pasa por un `Filter` (`RequestLoggingFilter`) que le pone al MDC:
 
 Esos dos campos van tanto en el patron de consola como en los `mdcFields` que se mandan a Better Stack (quedan como campos estructurados, no solo texto).
 
+**`/actuator/health` esta excluido del logging** (`RequestLoggingFilter.shouldNotFilter`). Render (y cualquier uptime-pinger que le agreguen) le pega a ese path todo el tiempo para saber si la instancia esta viva — no podemos bajar esa frecuencia (es infraestructura de Render, no configuracion de la app), pero si podemos evitar que cada uno de esos pings genere 2 lineas de log. Sin este filtro, en un rato el 90% de lo que ves en consola/Better Stack es ruido de health check, no trafico real. Regla general para el TP: **loguear el trafico de negocio, no los health checks.**
+
 ## Logging: como esta armado
 
 `src/main/resources/logback-spring.xml` define:
@@ -158,6 +160,16 @@ curl https://logs-demo-service-a.onrender.com/api/boom         # ERROR de prueba
 ### Como se creo (via API, no MCP)
 
 El MCP de Render se registro a mitad de esta sesion de Claude Code, y las herramientas de un MCP recien se cargan al arrancar una sesion nueva — asi que esta vez se uso la **API REST de Render** (`https://api.render.com/v1`) directamente con el mismo API key, vía `curl`: `POST /v1/services` (uno por servicio, `runtime: docker`, apuntando a este repo) y despues `PUT /v1/services/{id}/env-vars/OTHER_SERVICE_URL` en cada uno con la URL del otro (Render ya habia asignado las URLs al crearlos), seguido de un `POST /v1/services/{id}/deploys` para que tomen la env var nueva. En una sesion nueva de Claude Code esto se podria hacer con los tools del MCP en vez de curl crudo.
+
+## Buenas practicas / cosas a tener en cuenta para el TP
+
+Cosas que aprendimos armando esto y que valen para el enunciado:
+
+- **No loguear health checks.** Ver la nota de `/actuator/health` mas arriba — sin filtrarlo, la mayoria del volumen que se manda al logging centralizado es ruido de infraestructura, no trafico real. Aplica a cualquier endpoint de este tipo (`/health`, `/ready`, `/metrics` si lo exponen).
+- **La retencion en el free tier de Better Stack es corta.** La Source que usamos para probar (`platform: java`) tiene `logs_retention: 3` (3 dias) segun la propia API de Better Stack. Para el TP alcanza para debuggear al toque, pero no sirve como archivo historico — si necesitan mirar logs de hace una semana, no van a estar.
+- **`instanceId` es la clave para que esto sirva con multiples instancias/servicios.** Sin un campo que identifique el proceso (ademas del timestamp y el mensaje), tener logs centralizados de 2+ servicios es peor que tenerlos separados: se pierde el "de donde vino esto". En Render ya viene resuelto con `RENDER_INSTANCE_ID`; si un grupo despliega en otra plataforma, van a tener que buscar el equivalente (o generar un UUID propio al arrancar el proceso).
+- **El appender/token de logging centralizado no deberia romper el arranque si falta.** Por eso `BETTERSTACK_SOURCE_TOKEN` es opcional (`<if isDefined(...)>`) — asi un alumno puede desarrollar y correr todo en local sin tener que configurar Better Stack primero, y lo suma recien cuando lo necesita.
+- **Cuidado con hardcodear tokens en el repo.** Ver la seccion de Seguridad mas abajo — pasa muy facil en un TP grupal que alguien commitee un `.env` por error. Vale la pena poner `.env` en el `.gitignore` desde el commit inicial del enunciado/template, no despues.
 
 ## MCPs configurados en Claude Code
 

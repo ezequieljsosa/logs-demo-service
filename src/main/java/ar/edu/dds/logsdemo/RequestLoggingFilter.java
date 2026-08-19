@@ -28,6 +28,14 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
     }
 
     @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        // Render (y cualquier uptime-pinger) golpea /actuator/health todo el tiempo.
+        // Si lo logueamos, ensuciamos la consola y gastamos cuota/retencion en Better Stack
+        // con ruido que no aporta nada para debuggear.
+        return request.getRequestURI().startsWith("/actuator");
+    }
+
+    @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         String requestId = UUID.randomUUID().toString().substring(0, 8);
