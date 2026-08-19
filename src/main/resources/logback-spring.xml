@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} [instance=%X{instanceId} req=%X{requestId}] - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!--
+      El appender de Better Stack solo se activa si existe la variable de entorno
+      BETTERSTACK_SOURCE_TOKEN. Asi el proyecto arranca sin problema en local
+      aunque todavia no se haya configurado el logging centralizado.
+    -->
+    <if condition='isDefined("BETTERSTACK_SOURCE_TOKEN")'>
+        <then>
+            <appender name="BETTERSTACK" class="com.logtail.logback.LogtailAppender">
+                <appName>${APP_NAME:-logs-demo-service}</appName>
+                <sourceToken>${BETTERSTACK_SOURCE_TOKEN}</sourceToken>
+                <ingestUrl>${BETTERSTACK_INGEST_URL:-https://in.logs.betterstack.com}</ingestUrl>
+                <mdcFields>instanceId,requestId</mdcFields>
+                <mdcTypes>string,string</mdcTypes>
+            </appender>
+        </then>
+    </if>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <if condition='isDefined("BETTERSTACK_SOURCE_TOKEN")'>
+            <then>
+                <appender-ref ref="BETTERSTACK"/>
+            </then>
+        </if>
+    </root>
+
+</configuration>
