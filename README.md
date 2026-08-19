@@ -128,17 +128,36 @@ A los pocos segundos el log de `/api/ping` deberia aparecer en el dashboard de L
 
 También hay un `.env.example` con todas las variables — copialo a `.env` (esta en `.gitignore`, no se commitea) y expórtalo con `export $(cat .env | xargs)` o cargalo con tu herramienta preferida.
 
-## Deploy en Render (siguiente paso)
+## Deploy en Render
 
-Todavia no lo desplegamos — queda para la proxima parte. Cuando lo hagamos:
+Ya esta desplegado como 2 Web Services separados, cada uno buildeado con el `Dockerfile` de este repo (plan `free`, region `oregon`):
 
-- Cada "instancia" del TP (o cada servicio real) va a ser un **Web Service** de Render separado, buildeado con Docker o con el build de Java nativo de Render.
-- Variables de entorno a setear por servicio en Render (Dashboard -> el servicio -> Environment):
-  - `BETTERSTACK_SOURCE_TOKEN`
-  - `OTHER_SERVICE_URL` -> la URL publica (`*.onrender.com`) del otro servicio
-  - `APP_NAME` (opcional) -> para diferenciar el nombre logico en Better Stack, ej. `service-a`, `service-b`
-- `PORT` y `RENDER_INSTANCE_ID` los pone Render automaticamente, no hace falta configurarlos.
-- El health check de Render se puede apuntar a `/actuator/health`.
+| Servicio | URL |
+|----------|-----|
+| `logs-demo-service-a` | https://logs-demo-service-a.onrender.com |
+| `logs-demo-service-b` | https://logs-demo-service-b.onrender.com |
+
+Cada uno tiene estas env vars seteadas (Dashboard -> el servicio -> Environment):
+
+- `BETTERSTACK_SOURCE_TOKEN` / `BETTERSTACK_INGEST_URL` -> la Source de Better Stack (ver seccion de arriba)
+- `OTHER_SERVICE_URL` -> la URL publica del otro servicio (cruzado: A apunta a B y viceversa)
+- `APP_NAME` -> `service-a` / `service-b`, para diferenciarlos en Better Stack
+
+`PORT` y `RENDER_INSTANCE_ID` los pone Render automaticamente — por eso `instanceId` en Render se ve como `srv-xxxx-hibernate-yyyy-zzzz:10000` en vez de `service-a:8080` (usa `RENDER_INSTANCE_ID`, que tiene ese formato). El health check apunta a `/actuator/health`.
+
+Probado end-to-end:
+
+```bash
+curl https://logs-demo-service-a.onrender.com/api/call-other   # A le pega a B
+curl https://logs-demo-service-b.onrender.com/api/call-other   # B le pega a A
+curl https://logs-demo-service-a.onrender.com/api/boom         # ERROR de prueba
+```
+
+> **Nota sobre el plan free:** los servicios se "duermen" tras un rato sin trafico. El primer request despues de eso tarda unos segundos (cold start) — se nota en el `tookMs` de `/api/call-other` cuando el otro servicio estaba dormido.
+
+### Como se creo (via API, no MCP)
+
+El MCP de Render se registro a mitad de esta sesion de Claude Code, y las herramientas de un MCP recien se cargan al arrancar una sesion nueva — asi que esta vez se uso la **API REST de Render** (`https://api.render.com/v1`) directamente con el mismo API key, vía `curl`: `POST /v1/services` (uno por servicio, `runtime: docker`, apuntando a este repo) y despues `PUT /v1/services/{id}/env-vars/OTHER_SERVICE_URL` en cada uno con la URL del otro (Render ya habia asignado las URLs al crearlos), seguido de un `POST /v1/services/{id}/deploys` para que tomen la env var nueva. En una sesion nueva de Claude Code esto se podria hacer con los tools del MCP en vez de curl crudo.
 
 ## MCPs configurados en Claude Code
 
