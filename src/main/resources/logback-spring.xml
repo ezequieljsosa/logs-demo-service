@@ -1,9 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
 
+    <!--
+      %logger{36} ya muestra la clase. %method:%line agregan el metodo y la linea
+      exactos desde donde se llamo al logger. OJO: esto obliga a Logback a generar
+      un stacktrace en CADA linea de log para poder ubicar el caller (~overhead
+      chico pero real, no gratis). Para una demo/TP esta perfecto; en un servicio
+      de alto trafico en produccion normalmente se evita.
+    -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} [instance=%X{instanceId} req=%X{requestId}] - %msg%n</pattern>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36}.%method:%line [trace=%X{traceId} instance=%X{instanceId} req=%X{requestId}] - %msg%n</pattern>
         </encoder>
     </appender>
 
@@ -11,6 +18,18 @@
       El appender de Better Stack solo se activa si existe la variable de entorno
       BETTERSTACK_SOURCE_TOKEN. Asi el proyecto arranca sin problema en local
       aunque todavia no se haya configurado el logging centralizado.
+
+      Nota: el atributo condition="..." de <if> esta deprecado desde Logback 1.5.20
+      (motivo de seguridad: evalua codigo Java en runtime via Janino) y se va a
+      remover en 2027. El reemplazo (<condition> + un PropertyEvaluator Java custom)
+      es mas codigo del que amerita esta demo; por ahora sigue funcionando, solo
+      tira warning en el arranque.
+
+      Importante: el <if> tiene que envolver el <root> completo (no al reves).
+      Logback no soporta anidar <if> DENTRO de <root>: tira el warning
+      "IfNestedWithinSecondPhaseElementSC" en el arranque si lo haces asi
+      (lo vimos en los logs de Render). Por eso hay 2 bloques <root> completos,
+      uno por rama, en vez de un <root> con un <if> adentro.
     -->
     <if condition='isDefined("BETTERSTACK_SOURCE_TOKEN")'>
         <then>
@@ -18,19 +37,19 @@
                 <appName>${APP_NAME:-logs-demo-service}</appName>
                 <sourceToken>${BETTERSTACK_SOURCE_TOKEN}</sourceToken>
                 <ingestUrl>${BETTERSTACK_INGEST_URL:-https://in.logs.betterstack.com}</ingestUrl>
-                <mdcFields>instanceId,requestId</mdcFields>
-                <mdcTypes>string,string</mdcTypes>
+                <mdcFields>traceId,instanceId,requestId</mdcFields>
+                <mdcTypes>string,string,string</mdcTypes>
             </appender>
-        </then>
-    </if>
-
-    <root level="INFO">
-        <appender-ref ref="CONSOLE"/>
-        <if condition='isDefined("BETTERSTACK_SOURCE_TOKEN")'>
-            <then>
+            <root level="INFO">
+                <appender-ref ref="CONSOLE"/>
                 <appender-ref ref="BETTERSTACK"/>
-            </then>
-        </if>
-    </root>
+            </root>
+        </then>
+        <else>
+            <root level="INFO">
+                <appender-ref ref="CONSOLE"/>
+            </root>
+        </else>
+    </if>
 
 </configuration>

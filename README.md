@@ -19,10 +19,21 @@ antes de escribirlo en el enunciado. Sirve para validar que:
 
 Cada request pasa por un `Filter` (`RequestLoggingFilter`) que le pone al MDC:
 
-- `instanceId`: identifica el **proceso** (`RENDER_INSTANCE_ID` en Render, o `INSTANCE_NAME:PORT` en local). Esto es lo que te deja diferenciar, en Better Stack, de que instancia/servicio vino cada linea.
-- `requestId`: un id corto por request, para seguir una llamada puntual en los logs.
+- `traceId`: identifica **toda la cadena de llamadas**. Si el request trae el header `X-Trace-Id` lo reusa (asi lo propaga quien lo llamo); si no, lo genera porque es el punto de entrada. Cuando `PingController.callOther()` le pega al otro servicio, reenvia este mismo header — asi el log de A y el log de B para una misma llamada comparten `traceId`, aunque esten en procesos/instancias distintas. Es lo que te deja buscar en Better Stack por un `traceId` y ver el camino completo cruzando servicios.
+- `instanceId`: identifica el **proceso** (`RENDER_INSTANCE_ID` en Render, o `INSTANCE_NAME:PORT` en local). Te deja diferenciar de que instancia/servicio vino cada linea.
+- `requestId`: identifica **un solo hop** (un request puntual a un solo servicio). A diferencia de `traceId`, no se propaga: cada servicio genera el suyo. Sirve para aislar, dentro de un mismo `traceId`, que parte del log corresponde a la llamada externa vs. a la interna.
 
-Esos dos campos van tanto en el patron de consola como en los `mdcFields` que se mandan a Better Stack (quedan como campos estructurados, no solo texto).
+Los tres campos van tanto en el patron de consola como en los `mdcFields` que se mandan a Better Stack (quedan como campos estructurados y buscables, no solo texto pegado al mensaje).
+
+### ¿Que es un trace ID?
+
+Es un identificador que se genera una sola vez, en el punto de entrada de una request al sistema, y que se propaga (via header HTTP) a todos los servicios que participan en resolverla. La idea es que cualquier log, de cualquier proceso, que sea parte de esa misma "historia" comparta el mismo trace ID — asi despues podes reconstruir el camino completo aunque haya cruzado 3, 5 o 10 servicios.
+
+Lo que armamos aca es la version mas simple posible de esto: `RequestLoggingFilter` genera un `traceId` si no vino en el header `X-Trace-Id`, y `PingController.callOther()` lo reenvia en ese mismo header al llamar al otro servicio. Sirve para **buscar/filtrar** en Better Stack (Live tail o Search por `traceId:"71150dd4"`) y ver, ordenadas por tiempo, todas las lineas de todos los servicios que participaron en esa llamada.
+
+**Esto no es "distributed tracing" en el sentido completo** (spans + vista waterfall con tiempos y jerarquia padre/hijo, tipo Jaeger/Zipkin/Honeycomb). Better Stack si tiene esa funcionalidad — ingesta traces via **OpenTelemetry (OTLP)** y muestra un waterfall chart por trace — pero require instrumentar la app con el SDK de OpenTelemetry, no alcanza con el appender de Logback que usamos aca. Es un salto de complejidad bastante mayor (otro protocolo, otro SDK, otro modelo de datos) que queda fuera del alcance de este demo, que es sobre *logging* centralizado, no sobre tracing. Si el TP mas adelante quiere ir por ese lado, es un paso natural siguiente, no una alternativa a esto.
+
+El patron de consola tambien incluye `%logger{36}.%method:%line` — no solo la clase (`%logger`), sino el metodo y la linea exacta desde donde se logueo. Tiene un costo real (Logback arma un stacktrace por cada linea para poder ubicar el caller), asi que en un servicio de alto trafico en produccion normalmente se evita — para una demo/TP el costo es insignificante y la ganancia en debuggeabilidad vale la pena.
 
 **`/actuator/health` esta excluido del logging** (`RequestLoggingFilter.shouldNotFilter`). Render (y cualquier uptime-pinger que le agreguen) le pega a ese path todo el tiempo para saber si la instancia esta viva — no podemos bajar esa frecuencia (es infraestructura de Render, no configuracion de la app), pero si podemos evitar que cada uno de esos pings genere 2 lineas de log. Sin este filtro, en un rato el 90% de lo que ves en consola/Better Stack es ruido de health check, no trafico real. Regla general para el TP: **loguear el trafico de negocio, no los health checks.**
 
@@ -33,7 +44,19 @@ Esos dos campos van tanto en el patron de consola como en los `mdcFields` que se
 1. Un appender de **consola** siempre activo (para verlo en local y tambien porque Render captura stdout/stderr como logs del servicio).
 2. Un appender de **Better Stack** (`com.logtail.logback.LogtailAppender`) que **solo se activa si existe la variable de entorno `BETTERSTACK_SOURCE_TOKEN`**. Si no esta seteada, el proyecto arranca igual y solo loguea por consola — asi nadie se rompe la cabeza si todavia no configuro Better Stack.
 
-Esto se resuelve con un `<if condition='isDefined("BETTERSTACK_SOURCE_TOKEN")'>` (Logback + Janino), sin perfiles de Spring ni `if` en el codigo Java.
+Esto se resuelve con un `<if condition='isDefined("BETTERSTACK_SOURCE_TOKEN")'>` que envuelve **dos bloques `<root>` completos** (uno con Better Stack, uno sin), no perfiles de Spring ni `if` en el codigo Java. Dos detalles no obvios de esta parte del XML, documentados como comentario ahi mismo:
+
+- El `<if>` tiene que envolver el `<root>` (asi), no al reves. Ponerlo *adentro* de un `<root>` (`<root><if>...<appender-ref/>...</if></root>`) tira un warning de Logback (`IfNestedWithinSecondPhaseElementSC`) porque no esta soportado — lo vimos en los logs de Render la primera vez que lo desplegamos.
+- El atributo `condition="..."` de `<if>` esta deprecado desde Logback 1.5.20 (evalua codigo Java en runtime via Janino, lo cual tuvo vulnerabilidades de seguridad) y se va a remover en 2027. El reemplazo requiere una clase Java custom (`PropertyEvaluator`) — mas complejidad de la que amerita esta demo, asi que por ahora se deja (solo tira warning, sigue andando).
+
+### ¿Que es Better Stack y que es una "Source"?
+
+Better Stack es un SaaS de observabilidad (logs, metricas, incidentes). Para lo que nos interesa aca (centralizar logs), lo unico que hace falta entender es:
+
+- Una **Source** es un "canal" de ingesta: cada Source tiene su propio **Source Token** (para autenticar el envio de logs) y su propio **Ingesting host** (la URL a la que se postean). Todo lo que se manda con ese token a ese host cae en la misma Source.
+- No hace falta una Source por servicio — de hecho para este demo, **A y B mandan a la misma Source** (`BETTERSTACK_SOURCE_TOKEN` es igual en ambos), y se distinguen despues por el campo `instanceId` (o `appName`, ver `APP_NAME`). Es una decision de diseño: una Source por *tipo de dato/proyecto*, no por *proceso*.
+- **Live tail** es la vista de logs en tiempo real (lo que van a usar la mayoria de las veces para debuggear mientras prueban). **Search** es para consultar logs pasados con filtros.
+- Los `mdcFields` que configuramos en el appender (`traceId`, `instanceId`, `requestId`) no son texto libre: llegan como **campos estructurados**, o sea que en Better Stack se pueden filtrar/buscar por `instanceId:"service-a:8080"` en vez de tener que grepear el mensaje.
 
 ### Como conseguir el `BETTERSTACK_SOURCE_TOKEN`
 
@@ -105,11 +128,13 @@ curl http://localhost:8081/api/boom         # genera un ERROR en B
 En los logs de consola vas a ver, por ejemplo:
 
 ```
-[instance=service-a:8080 req=eae694ae] - --> GET /api/call-other
-[instance=service-a:8080 req=eae694ae] - call-other invocado, OTHER_SERVICE_URL=http://localhost:8081
-[instance=service-b:8081 req=717d8d56] - --> GET /api/ping        <- distinto proceso, distinto requestId
-[instance=service-a:8080 req=eae694ae] - <-- GET /api/call-other status=200 took=69ms
+RequestLoggingFilter.doFilterInternal:58 [trace=71150dd4 instance=service-a:8080 req=021f8144] - --> GET /api/call-other
+PingController.callOther:46             [trace=71150dd4 instance=service-a:8080 req=021f8144] - call-other invocado, OTHER_SERVICE_URL=http://localhost:8081
+RequestLoggingFilter.doFilterInternal:58 [trace=71150dd4 instance=service-b:8081 req=7fc4ae11] - --> GET /api/ping        <- mismo trace, distinto proceso, distinto requestId
+PingController.callOther:66             [trace=71150dd4 instance=service-a:8080 req=021f8144] - respuesta de otro servicio recibida en 145ms: {...}
 ```
+
+Fijate que `trace=71150dd4` es igual en las 4 lineas aunque vengan de 2 procesos distintos — eso es lo que te deja seguir una llamada de punta a punta en Better Stack filtrando por `traceId`. `requestId` en cambio cambia entre A y B: cada uno genera el suyo por hop.
 
 Esto ya se corrio y se verifico funcionando en esta sesion (build OK, 2 procesos levantados en 8080/8081, `/api/ping`, `/api/call-other` y `/api/boom` devolviendo lo esperado).
 
@@ -155,7 +180,7 @@ curl https://logs-demo-service-b.onrender.com/api/call-other   # B le pega a A
 curl https://logs-demo-service-a.onrender.com/api/boom         # ERROR de prueba
 ```
 
-> **Nota sobre el plan free:** los servicios se "duermen" tras un rato sin trafico. El primer request despues de eso tarda unos segundos (cold start) — se nota en el `tookMs` de `/api/call-other` cuando el otro servicio estaba dormido.
+> **Nota sobre el plan free:** los servicios se "duermen" tras un rato sin trafico, y el cold start de una app Java/Spring Boot en el free tier es **lento de verdad** — lo medimos: 56s y 105s en dos arranques distintos, la mayor parte en `ApplicationContext` initialization (CPU muy compartida/limitada en ese plan). Si a un alumno el primer request le "cuelga" o tira timeout, probablemente sea esto, no un bug — conviene pegarle a `/actuator/health` primero y esperar antes de asumir que algo esta roto.
 
 ### Como se creo (via API, no MCP)
 
