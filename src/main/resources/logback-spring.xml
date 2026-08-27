@@ -15,41 +15,26 @@
     </appender>
 
     <!--
-      El appender de Better Stack solo se activa si existe la variable de entorno
-      BETTERSTACK_SOURCE_TOKEN. Asi el proyecto arranca sin problema en local
-      aunque todavia no se haya configurado el logging centralizado.
-
-      Nota: el atributo condition="..." de <if> esta deprecado desde Logback 1.5.20
-      (motivo de seguridad: evalua codigo Java en runtime via Janino) y se va a
-      remover en 2027. El reemplazo (<condition> + un PropertyEvaluator Java custom)
-      es mas codigo del que amerita esta demo; por ahora sigue funcionando, solo
-      tira warning en el arranque.
-
-      Importante: el <if> tiene que envolver el <root> completo (no al reves).
-      Logback no soporta anidar <if> DENTRO de <root>: tira el warning
-      "IfNestedWithinSecondPhaseElementSC" en el arranque si lo haces asi
-      (lo vimos en los logs de Render). Por eso hay 2 bloques <root> completos,
-      uno por rama, en vez de un <root> con un <if> adentro.
+      A diferencia de Better Stack, este appender no depende de un <if> de Logback:
+      DatadogHttpAppender arranca en modo no-op el mismo si falta DATADOG_API_KEY
+      (ver start() en la clase), asi que se puede referenciar siempre desde <root>
+      sin condicional ni la dependencia de Janino que eso requeria.
     -->
-    <if condition='isDefined("BETTERSTACK_SOURCE_TOKEN")'>
-        <then>
-            <appender name="BETTERSTACK" class="com.logtail.logback.LogtailAppender">
-                <appName>${APP_NAME:-logs-demo-service}</appName>
-                <sourceToken>${BETTERSTACK_SOURCE_TOKEN}</sourceToken>
-                <ingestUrl>${BETTERSTACK_INGEST_URL:-https://in.logs.betterstack.com}</ingestUrl>
-                <mdcFields>traceId,instanceId,requestId</mdcFields>
-                <mdcTypes>string,string,string</mdcTypes>
-            </appender>
-            <root level="INFO">
-                <appender-ref ref="CONSOLE"/>
-                <appender-ref ref="BETTERSTACK"/>
-            </root>
-        </then>
-        <else>
-            <root level="INFO">
-                <appender-ref ref="CONSOLE"/>
-            </root>
-        </else>
-    </if>
+    <appender name="DATADOG" class="ar.edu.dds.logsdemo.DatadogHttpAppender">
+        <service>${APP_NAME:-logs-demo-service}</service>
+    </appender>
+
+    <!-- Async para que un intake lento de Datadog no bloquee el thread que loguea. -->
+    <appender name="DATADOG_ASYNC" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>1024</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <neverBlock>true</neverBlock>
+        <appender-ref ref="DATADOG"/>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="DATADOG_ASYNC"/>
+    </root>
 
 </configuration>
